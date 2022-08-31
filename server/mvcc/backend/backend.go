@@ -408,7 +408,9 @@ func (b *backend) run() {
 			b.batchTx.CommitAndStop()
 			return
 		}
+		// 默认每 100ms 执行一次自动提交
 		if b.batchTx.safePending() != 0 {
+			// 如果当前周期内存在 pending 的写事务就提交事务
 			b.batchTx.Commit()
 		}
 		t.Reset(b.batchInterval)

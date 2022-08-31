@@ -55,7 +55,7 @@ func startEtcdOrProxyV2(args []string) {
 	cfg := newConfig()
 	defaultInitialCluster := cfg.ec.InitialCluster
 
-	err := cfg.parse(args[1:])
+	err := cfg.parse(args[1:]) // 解析命令行参数，并在内部会创建 logger
 	lg := cfg.ec.GetLogger()
 	// If we failed to parse the whole configuration, print the error using
 	// preferably the resolved logger from the config,

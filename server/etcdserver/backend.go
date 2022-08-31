@@ -52,7 +52,7 @@ func newBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
 	}
 	bcfg.Mlock = cfg.ExperimentalMemoryMlock
 	bcfg.Hooks = hooks
-	return backend.New(bcfg)
+	return backend.New(bcfg) // 启动一个 goroutine
 }
 
 // openSnapshotBackend renames a snapshot db to the current etcd db and opens it.
@@ -73,9 +73,10 @@ func openBackend(cfg config.ServerConfig, hooks backend.Hooks) backend.Backend {
 
 	now, beOpened := time.Now(), make(chan backend.Backend)
 	go func() {
-		beOpened <- newBackend(cfg, hooks)
+		beOpened <- newBackend(cfg, hooks) // goroutine 中创建存储引擎 backend, 然后将创建的 backend 通过 beOpened channel 传递给外面的 goroutine
 	}()
 
+	// 注意这里不是 for 循环，所以当前 goroutine 不会一直在这里监听 channel
 	select {
 	case be := <-beOpened:
 		cfg.Logger.Info("opened backend db", zap.String("path", fn), zap.Duration("took", time.Since(now)))

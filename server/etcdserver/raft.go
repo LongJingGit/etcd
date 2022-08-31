@@ -163,6 +163,8 @@ func (r *raftNode) tick() {
 
 // start prepares and starts raftNode in a new goroutine. It is no longer safe
 // to modify the fields after it has been started.
+// 运行 raft 实例. raft 负责维护 node 当前的状态: 任期, leader, 日志 commit 等. raft 是 StateMachine 当前 State
+// 注意: node 和 raft 是一一对应的关系，两者通过 Ready channel 进行通信
 func (r *raftNode) start(rh *raftReadyHandler) {
 	internalTimeout := time.Second
 
@@ -171,6 +173,15 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 		islead := false
 
 		for {
+			/**
+			 * 当 etcd raft 集群中超过半数以上的节点已经接收了日志数据之后, etcd raft 会通过 Ready channel 通知 raftNode 该日志数据已经 committed 了
+			 * raftNode 从 Node.Ready() 中接收到该条日志数据之后：
+			 * 1. 将这条日志写入到 WAL 中(如果上层 etcd server 持久化时候丢失了数据，启动恢复的时候也可以根据 WAL 中的日志进行数据恢复)
+			 * 2. 通知最上层 etcd server 该日志已经 committed 了
+			 * 3. 最上层的 etcd server 调用 applierV3 模块将日志写入到持久化存储中
+			 * 4. etcd server 应答客户端该数据写入成功
+			 * 5. 最后 etcd server 调用 etcd raft, 修改其 raftLog 模块的数据，将这条数据写入到 raftLog 的 storage 中
+			 */
 			select {
 			case <-r.ticker.C:
 				r.tick()
@@ -217,6 +228,15 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 
 				updateCommittedIndex(&ap, rh)
 
+				// 通知 raft 库 propose 的操作的结果: 注意不是返回给 client
+				/**
+				 * 客户端的所有操作到达 etcdServer 之后会按照 PUT/GET/DELETE 封装成 propose 然后提交给 raftNode 等, etcdServer 提交完 propose 之后会在特定的 channel 等待 propose 操作的结果。
+				 * 当 raftNode 处理完 propose 之后，会返回给 etcd server 该 propose 的结果
+				 *
+				 * 代码参考:
+				 * 		v2_server.go:processRaftRequest()
+				 * 		v3_server.go:processInternalRaftRequestOnce()
+				 */
 				select {
 				case r.applyc <- ap:
 				case <-r.stopped:
@@ -228,13 +248,14 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				// For more details, check raft thesis 10.2.1
 				if islead {
 					// gofail: var raftBeforeLeaderSend struct{}
-					r.transport.Send(r.processMessages(rd.Messages))
+					r.transport.Send(r.processMessages(rd.Messages)) // leader 将操作结果返回给 client
 				}
 
 				// Must save the snapshot file and WAL snapshot entry before saving any other entries or hardstate to
 				// ensure that recovery after a snapshot restore is possible.
 				if !raft.IsEmptySnap(rd.Snapshot) {
 					// gofail: var raftBeforeSaveSnap struct{}
+					// 写 snapshot 到 WAL 中
 					if err := r.storage.SaveSnap(rd.Snapshot); err != nil {
 						r.lg.Fatal("failed to save Raft snapshot", zap.Error(err))
 					}
@@ -242,6 +263,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				}
 
 				// gofail: var raftBeforeSave struct{}
+				// 写 entries 到 WAL 中
 				if err := r.storage.Save(rd.HardState, rd.Entries); err != nil {
 					r.lg.Fatal("failed to save Raft hard state and entries", zap.Error(err))
 				}
@@ -314,7 +336,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					notifyc <- struct{}{}
 				}
 
-				r.Advance()
+				r.Advance() // 调用的是 raft.go (n *node) Advance(), 通过 channel 通知 node 实例, 当前 ready 已经处理完了
 			case <-r.stopped:
 				return
 			}
@@ -362,6 +384,7 @@ func (r *raftNode) processMessages(ms []raftpb.Message) []raftpb.Message {
 			}
 			ms[i].To = 0
 		}
+
 		if ms[i].Type == raftpb.MsgHeartbeat {
 			ok, exceed := r.td.Observe(ms[i].To)
 			if !ok {

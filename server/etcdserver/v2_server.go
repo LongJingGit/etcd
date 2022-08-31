@@ -99,15 +99,17 @@ func (a *reqV2HandlerEtcdServer) processRaftRequest(ctx context.Context, r *Requ
 	if err != nil {
 		return Response{}, err
 	}
+	// 对于写请求把该请求通过请求 ID 注册到 Wait 链表上，并拿到一个获取响应的通道，后面在 select 中阻塞在这个通道上等待响应结果
+	// 在 raft 实例处理完 Ready 中的数据之后，会通过 ch channel 返回 Propose 的操作结果
 	ch := a.s.w.Register(r.ID)
 
 	start := time.Now()
-	a.s.r.Propose(ctx, data)
+	a.s.r.Propose(ctx, data) // 把请求提交到 raftNode 上
 	proposalsPending.Inc()
 	defer proposalsPending.Dec()
 
 	select {
-	case x := <-ch:
+	case x := <-ch: // 等待 Propose 的操作结果
 		resp := x.(Response)
 		return resp, resp.Err
 	case <-ctx.Done():

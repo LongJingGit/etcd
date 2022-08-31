@@ -643,10 +643,12 @@ func (s *EtcdServer) doSerialize(ctx context.Context, chk func(*auth.AuthInfo) e
 func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.InternalRaftRequest) (*applyResult, error) {
 	ai := s.getAppliedIndex()
 	ci := s.getCommittedIndex()
+	// 如果 commit 的索引比 applied 的索引超出太多，说明当前还有很多数据没有 apply, 返回错误
 	if ci > ai+maxGapBetweenApplyAndCommitIndex {
 		return nil, ErrTooManyRequests
 	}
 
+	// 调用 s.reqIDGen.Next() 函数生成一个针对当前请求的 ID, 注意这个ID并不是一个随机数而是一个严格递增的整数。
 	r.Header = &pb.RequestHeader{
 		ID: s.reqIDGen.Next(),
 	}
@@ -663,6 +665,7 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 		}
 	}
 
+	// 序列化请求数据为 data, 这会作为 raft 数据进行存储
 	data, err := r.Marshal()
 	if err != nil {
 		return nil, err
@@ -676,13 +679,14 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 	if id == 0 {
 		id = r.Header.ID
 	}
+	// 用上面生成的请求 ID 注册一个 channel, 该 channel 用于通知操作结果. 后面就可以通过该 channel 监听是否成功存储了提交的数据
 	ch := s.w.Register(id)
 
 	cctx, cancel := context.WithTimeout(ctx, s.Cfg.ReqTimeout())
 	defer cancel()
 
 	start := time.Now()
-	err = s.r.Propose(cctx, data)
+	err = s.r.Propose(cctx, data) // 将请求提交给 etcd raft lib, context 上带有超时时间
 	if err != nil {
 		proposalsFailed.Inc()
 		s.w.Trigger(id, nil) // GC wait
@@ -692,9 +696,9 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 	defer proposalsPending.Dec()
 
 	select {
-	case x := <-ch:
+	case x := <-ch: // ch channel 返回说明数据成功被存储了
 		return x.(*applyResult), nil
-	case <-cctx.Done():
+	case <-cctx.Done(): // context 返回说明提交超时了
 		proposalsFailed.Inc()
 		s.w.Trigger(id, nil) // GC wait
 		return nil, s.parseProposeCtxErr(cctx.Err(), start)

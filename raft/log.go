@@ -21,20 +21,26 @@ import (
 	pb "go.etcd.io/etcd/raft/v3/raftpb"
 )
 
+// 实现 raft 日志操作. raft 日志的内存结构见 《codedump 的网络日志: etcd Raft 库解析》
+// 一条日志数据，首先需要被提交成功(committed), 然后才能被应用(applied)到状态机中.因此 applied <= committed
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
+	// 存储已经持久化数据的 Storage 接口, 内存结构在 MemoryStorage struct 中
 	storage Storage
 
 	// unstable contains all unstable entries and snapshot.
 	// they will be saved into storage.
+	// 应用层还没有持久化的数据, 包含 snapshot + entries
 	unstable unstable
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
+	// 保存当前提交的日志数据索引
 	committed uint64
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
+	// 保存当前传入状态机的数据最高索引(更新该索引是在 raft.advance() 中)
 	applied uint64
 
 	logger Logger
@@ -51,8 +57,17 @@ func newLog(storage Storage, logger Logger) *raftLog {
 	return newLogWithSize(storage, logger, noLimit)
 }
 
-// newLogWithSize returns a log using the given storage and max
-// message size.
+// newLogWithSize returns a log using the given storage and max message size.
+/**
+ * raft 日志的内存结构:
+ * 		<MemoryStorage.snapshot><MemoryStorage.ents><unstable.ents>
+ * 其中:
+ * 		firstIndex: 取自 storage.FirstIndex(), 该值是 MemoryStorage.ents 中的第一条数据索引
+ * 		lastIndex: 取自 storage.LastIndex(), 该值是 MemoryStorage.ents 中的最后一条数据索引
+ * 		unstable.offset: 该值为 lastIndex 索引的下一个位置
+ * 		committed/applied: 在初始的情况下，这两个值是 firstIndex 的上一个索引位置，这是因为在 firstIndex 之前的数据既然已经是持久化数据了，说明都是已经被提交成功的数据了
+ *
+ */
 func newLogWithSize(storage Storage, logger Logger, maxNextEntsSize uint64) *raftLog {
 	if storage == nil {
 		log.Panic("storage must not be nil")

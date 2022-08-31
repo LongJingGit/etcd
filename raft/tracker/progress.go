@@ -27,6 +27,7 @@ import (
 // NB(tbg): Progress is basically a state machine whose transitions are mostly
 // strewn around `*raft.raft`. Additionally, some fields are only used when in a
 // certain State. All of this isn't ideal.
+// 在 leader 中保存每个 follower 的信息, leader 将根据这些信息决定发送给节点的日志
 type Progress struct {
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.

@@ -39,45 +39,53 @@ message Snapshot {
 // For description of different message types, see:
 // https://pkg.go.dev/go.etcd.io/etcd/raft/v3#hdr-MessageType
 enum MessageType {
-	MsgHup             = 0;
-	MsgBeat            = 1;
+	MsgHup             = 0;		// 不用于节点间通信，仅用于发送给本节点让本节点进行选举, 在 node 状态机的 tick 函数中发送该消息
+	MsgBeat            = 1;		// 不用于节点间通信，仅用于 leader 节点在 heartbeat 定时器到期时向集群中其他节点发送心跳消息
+	// raft 库使用者提议 (propose) 数据, 也可以理解成集群中的其他节点向 leader 转发用户提交的数据
+	// 该消息主要由 leader 来处理, candidate 和 follower 会忽略这条消息. leader 状态机处理逻辑在 raft/raft.go 中
 	MsgProp            = 2;
-	MsgApp             = 3;
-	MsgAppResp         = 4;
-	MsgVote            = 5;
-	MsgVoteResp        = 6;
-	MsgSnap            = 7;
+	MsgApp             = 3;		// leader 向 follower 同步普通数据的消息. 注意和 MsgSnap 区分
+	MsgAppResp         = 4;		// follower 针对 leader 的 MsgApp/MsgSnap 消息的应答消息
+	MsgVote            = 5;		// 请求投票: 节点投票给自己以进行新一轮的选举
+	MsgVoteResp        = 6;		// 投票应答
+	MsgSnap            = 7;		// leader 向 follower 同步快照数据的消息（日志数据被压缩成了快照，所以同步数据时需要使用快照进行同步）
+	// leader 向 follower 发送心跳消息, 该心跳消息的主要作用:
+	// 1. 探测节点的存活情况
+	// 2. commit 成员: leader 选举 min[节点上的Match, leader日志最大提交索引], 用于告知节点哪些日志可以进行提交了commit
+	// 3. context: 与线性一致性读相关
 	MsgHeartbeat       = 8;
-	MsgHeartbeatResp   = 9;
-	MsgUnreachable     = 10;
-	MsgSnapStatus      = 11;
-	MsgCheckQuorum     = 12;
-	MsgTransferLeader  = 13;
-	MsgTimeoutNow      = 14;
-	MsgReadIndex       = 15;
+	MsgHeartbeatResp   = 9;		// follower 向 leader 发送心跳应答消息
+	MsgUnreachable     = 10;	// 应用层向 leader 汇报某个节点当前已经不可达（leader如果判断该节点处于正常接收数据的状态，那么就切换到探测状态）
+	MsgSnapStatus      = 11;	// 应用层向 leader 汇报某个节点当前接收快照的状态
+	// leader 的定时器函数，在超过选举时间时，如果当前打开了 raft.checkQuorum 开关，那么 leader 将给自己发送一条 MsgCheckQuorum消息,
+	// 对该消息的处理是：检查集群中所有节点的状态，如果超过半数的节点都不活跃了，那么 leader 也切换到 follower 状态
+	MsgCheckQuorum     = 12;	// leader 检查当前集群可用性的消息
+	MsgTransferLeader  = 13;	// 迁移 leader 的消息, follower 会将这种类型的消息转发给 leader
+	MsgTimeoutNow      = 14;	// leader 迁移时，当新旧 leader 的日志数据同步后，旧 leader 向新 leader 发送该消息通知可以进行迁移了
+	MsgReadIndex       = 15;	// 用于读一致性的消息
 	MsgReadIndexResp   = 16;
-	MsgPreVote         = 17;
-	MsgPreVoteResp     = 18;
+	MsgPreVote         = 17;	// 请求投票: 预投票(关于该消息的详细解释见 coredump 的网络日志: etcd Raft 库解析)
+	MsgPreVoteResp     = 18;	// 投票应答
 }
 
 message Message {
-	optional MessageType type        = 1  [(gogoproto.nullable) = false];
-	optional uint64      to          = 2  [(gogoproto.nullable) = false];
-	optional uint64      from        = 3  [(gogoproto.nullable) = false];
-	optional uint64      term        = 4  [(gogoproto.nullable) = false];
+	optional MessageType type        = 1  [(gogoproto.nullable) = false];		// 消息类型
+	optional uint64      to          = 2  [(gogoproto.nullable) = false];		// 消息接收者的节点 ID
+	optional uint64      from        = 3  [(gogoproto.nullable) = false];		// 消息发送者的节点 ID
+	optional uint64      term        = 4  [(gogoproto.nullable) = false];		// 任期 ID
 	// logTerm is generally used for appending Raft logs to followers. For example,
 	// (type=MsgApp,index=100,logTerm=5) means leader appends entries starting at
 	// index=101, and the term of entry at index 100 is 5.
 	// (type=MsgAppResp,reject=true,index=100,logTerm=5) means follower rejects some
 	// entries from its leader as it already has an entry with term 5 at index 100.
-	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];
-	optional uint64      index       = 6  [(gogoproto.nullable) = false];
-	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];
-	optional uint64      commit      = 8  [(gogoproto.nullable) = false];
-	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];
-	optional bool        reject      = 10 [(gogoproto.nullable) = false];
-	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];
-	optional bytes       context     = 12;
+	optional uint64      logTerm     = 5  [(gogoproto.nullable) = false];	// 日志所处的任期 ID
+	optional uint64      index       = 6  [(gogoproto.nullable) = false];	// 日志索引 ID, 用于 follower 向 leader 汇报自己已经 commit 的日志数据 ID
+	repeated Entry       entries     = 7  [(gogoproto.nullable) = false];	// 日志条目数组
+	optional uint64      commit      = 8  [(gogoproto.nullable) = false];	// 提交日志索引
+	optional Snapshot    snapshot    = 9  [(gogoproto.nullable) = false];	// 快照数据
+	optional bool        reject      = 10 [(gogoproto.nullable) = false];	// 是否拒绝日志同步的请求
+	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];	// 拒绝同步日志请求时返回的当前节点的日志ID,用于被拒绝方快速定位到下一次合适的同步日志位置
+	optional bytes       context     = 12;		// 上下文数据
 }
 
 message HardState {

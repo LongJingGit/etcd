@@ -200,6 +200,7 @@ type Server interface {
 }
 
 // EtcdServer is the production implementation of the Server interface
+// 负责与外部客户端进行通信
 type EtcdServer struct {
 	// inflightSnapshots holds count the number of snapshots currently inflight.
 	inflightSnapshots int64  // must use atomic operations to access; keep 64-bit aligned.
@@ -209,7 +210,7 @@ type EtcdServer struct {
 	lead              uint64 // must use atomic operations to access; keep 64-bit aligned.
 
 	consistIndex cindex.ConsistentIndexer // consistIndex is used to get/set/save consistentIndex
-	r            raftNode                 // uses 64-bit atomics; keep 64-bit aligned.
+	r            raftNode                 // uses 64-bit atomics; keep 64-bit aligned. 负责 ETCD 与 raft 库进行交互
 
 	readych chan struct{}
 	Cfg     config.ServerConfig
@@ -379,7 +380,7 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 
 	ci := cindex.NewConsistentIndex(nil)
 	beHooks := &backendHooks{lg: cfg.Logger, indexer: ci}
-	be := openBackend(cfg, beHooks)
+	be := openBackend(cfg, beHooks) // 在 goroutine 中创建并运行存储引擎 Backend
 	ci.SetBackend(be)
 	cindex.CreateMetaBucket(be.BatchTx())
 
@@ -595,6 +596,7 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 
 	// always recover lessor before kv. When we recover the mvcc.KV it will reattach keys to its leases.
 	// If we recover mvcc.KV first, it will attach the keys to the wrong lessor before it recovers.
+	// goroutine 中创建并运行 lessor
 	srv.lessor = lease.NewLessor(srv.Logger(), srv.be, srv.cluster, lease.LessorConfig{
 		MinLeaseTTL:                int64(math.Ceil(minTTL.Seconds())),
 		CheckpointInterval:         cfg.LeaseCheckpointInterval,
@@ -612,6 +614,7 @@ func NewServer(cfg config.ServerConfig) (srv *EtcdServer, err error) {
 		cfg.Logger.Warn("failed to create token provider", zap.Error(err))
 		return nil, err
 	}
+	// goroutine 中创建并运行 mvcc
 	srv.kv = mvcc.New(srv.Logger(), srv.be, srv.lessor, mvcc.StoreConfig{CompactionBatchLimit: cfg.CompactionBatchLimit})
 
 	kvindex := ci.ConsistentIndex()
@@ -825,6 +828,7 @@ func (s *EtcdServer) start() {
 		s.Cfg.SnapshotCatchUpEntries = DefaultSnapshotCatchUpEntries
 	}
 
+	// 创建通信 channel
 	s.w = wait.New()
 	s.applyWait = wait.NewTimeList()
 	s.done = make(chan struct{})
@@ -854,7 +858,7 @@ func (s *EtcdServer) start() {
 
 	// TODO: if this is an empty log, writes all peer infos
 	// into the first entry
-	go s.run()
+	go s.run() // 运行 etcdserver
 }
 
 func (s *EtcdServer) purgeFile() {
@@ -1074,7 +1078,7 @@ func (s *EtcdServer) run() {
 			}
 		},
 	}
-	s.r.start(rh)
+	s.r.start(rh) // 在 goroutine 中启动 raftNode 实例
 
 	ep := etcdProgress{
 		confState: sn.Metadata.ConfState,
@@ -1109,9 +1113,11 @@ func (s *EtcdServer) run() {
 		expiredLeaseC = s.lessor.ExpiredLeasesC()
 	}
 
+	// etcd server 一直在这个 for 循环中运行, 等待 s.r.start(rh) 中的操作结果
 	for {
 		select {
-		case ap := <-s.r.apply():
+		case ap := <-s.r.apply(): // 等待 s.r.start(rh) 中运行的 raft 实例的操作结果
+			// 调用 applierV3 模块将日志写入到持久化存储中, 将操作结果再返回给 v3_server.go 中等待的 ch channel
 			f := func(context.Context) { s.applyAll(&ep, &ap) }
 			sched.Schedule(f)
 		case leases := <-expiredLeaseC:
@@ -2190,6 +2196,7 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	}
 	s.lg.Debug("applyEntryNormal", zap.Stringer("raftReq", &raftReq))
 
+	// 通过 Wait.Trigger(reqid, ...) 把 s.applyRequest(req) 返回的响应发送给 ch channel. etcdServer 结束在 Do 函数中的等待
 	if raftReq.V2 != nil {
 		req := (*RequestV2)(raftReq.V2)
 		s.w.Trigger(req.ID, s.applyV2Request(req, shouldApplyV3))
