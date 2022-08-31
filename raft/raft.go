@@ -1120,6 +1120,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		}
 		// leader 向 follower 节点发送附加日志条目请求(AppendEntries RPC),
 		// 来要求它们将这条日志附加到各自本地的日志集合: leader 向 follower 发送 MsgApp/MsgSnap 类型的消息
+		// leader 发出的 AppendEntries RPC 中会额外携带上一条日志的(term,index), 如果 follower 在本地找不到相同的(term,index),则拒绝接收这次新的日志
 		r.bcastAppend()
 		return nil
 	case pb.MsgReadIndex:
@@ -1558,6 +1559,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	}
 
 	// 接收日志同步请求, 将日志数据附加到自己本地的日志集合, 然后向 leader 回复消息
+	// leader 的 AppendEntries RPC 中携带有上一条日志的(term,index),如果 follower 在自己的日志中找不到相同的(term,index),则会拒绝这次的日志同步请求
 	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
 	} else {
@@ -1592,7 +1594,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *raft) handleHeartbeat(m pb.Message) {
-	r.raftLog.commitTo(m.Commit)
+	r.raftLog.commitTo(m.Commit) // 心跳消息中携带有当前已经安全复制的日志索引, follower 收到 leader 的心跳消息之后，会更新自己本地的 raftLog.committed
 	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
 }
 
