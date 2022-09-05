@@ -413,7 +413,9 @@ func (n *node) run() {
 		case readyc <- rd:
 			n.rn.acceptReady(rd)
 			advancec = n.advancec
-		case <-advancec: // 确认 Ready 已经处理完, 更新 raftLog.applied (只有写操作会更新)
+		// 确认 Ready 已经处理完, 更新 raftLog.applied (只有写操作会更新), 并删除 unstable_log 中已经持久化的 entries 和 spnapshot.
+		// 是由 raftNode(etcdserver/raft.go) 通过 channel 通知 raft lib
+		case <-advancec:
 			n.rn.Advance(rd)
 			rd = Ready{}
 			advancec = nil

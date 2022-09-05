@@ -575,10 +575,11 @@ func (r *raft) advance(rd Ready) {
 
 	if len(rd.Entries) > 0 {
 		e := rd.Entries[len(rd.Entries)-1]
-		r.raftLog.stableTo(e.Index, e.Term)
+		r.raftLog.stableTo(e.Index, e.Term) // 删除 unstable_log 中已经持久化的 entries 日志数据
 	}
+
 	if !IsEmptySnap(rd.Snapshot) {
-		r.raftLog.stableSnapTo(rd.Snapshot.Metadata.Index)
+		r.raftLog.stableSnapTo(rd.Snapshot.Metadata.Index) // 删除 unstable_log 中已经持久化的 snapshot 日志数据
 	}
 }
 

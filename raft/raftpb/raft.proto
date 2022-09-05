@@ -18,6 +18,9 @@ enum EntryType {
 	EntryConfChangeV2 = 2; // corresponds to pb.ConfChangeV2
 }
 
+// (Term, Index) 标识唯一的一条日志。如果不同的节点日志集合中，两个日志条目拥有相同的 term 和 index, 那么它们一定是相同的日志, 并且它们之前所有的日志条目也全部相同
+// leader 发出的 AppendEntries RPC 中会额外携带上一条日志的 (term, index), 如果 follower 在本地找不到相同的 (term, index) 日志，则拒绝接收这次新的日志
+// 判断两条日志哪一条更新: 如果 term 不同, term 更大的日志更新; 否则 index 更大的日志更新
 message Entry {
 	optional uint64     Term  = 2 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
 	optional uint64     Index = 3 [(gogoproto.nullable) = false]; // must be 64-bit aligned for atomic operations
