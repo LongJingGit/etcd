@@ -41,7 +41,7 @@ etcd_build() {
     cd ./server
     # Static compilation is useful when etcd is run in a container. $GO_BUILD_FLAGS is OK
     # shellcheck disable=SC2086
-    run env "${GO_BUILD_ENV[@]}" go build $GO_BUILD_FLAGS \
+    run env "${GO_BUILD_ENV[@]}" go build -gcflags "all=-N -l" $GO_BUILD_FLAGS \
       -installsuffix=cgo \
       "-ldflags=${GO_LDFLAGS[*]}" \
       -o="../${out}/etcd" . || return 2
